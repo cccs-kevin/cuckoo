@@ -267,6 +267,19 @@ class Config(object):
                 "guacd_port": Int(4822),
             },
         },
+        "kv": {
+            "kv": {
+                "namespace": String("cuckoo"),
+                "kubeconfig": String("~/.kube/config"),
+                "snapshots": List(String, "cuckoo-victim-snapshot"),
+                "machines": List(String, "cuckoo1"),
+                "running_machines_gap": Int(0),
+                "dynamic_machines_limit": Int(10),
+                "interface": String("default"),
+                "supported_os_tags": List(String, "win7x64"),
+                "environment": String("staging"),
+            },
+        },
         "virtualbox": {
             "virtualbox": {
                 "mode": String("headless"),

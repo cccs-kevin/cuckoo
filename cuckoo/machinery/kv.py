@@ -22,16 +22,20 @@ from cuckoo.common.abstracts import Machinery
 from cuckoo.common.config import config as cuckoo_config
 from cuckoo.common.exceptions import (
     CuckooCriticalError, CuckooMachineError, CuckooMachineSnapshotError,
-    CuckooMissingMachineError, CuckooDependencyError
+    CuckooMissingMachineError, CuckooDependencyError, CuckooConfigurationError
 )
 log = logging.getLogger(__name__)
 
 
-NAMESPACE = "cuckoo"
-
-
 class KubeVirt(Machinery):
     """Virtualization layer for KubeVirt."""
+
+    # Operating System Tag Prefixes
+    WINDOWS_TAG_PREFIX = "win"
+    LINUX_TAG_PREFIX = "ub"
+    VALID_TAG_PREFIXES = [WINDOWS_TAG_PREFIX, LINUX_TAG_PREFIX]
+
+    VM_NAME_FORMAT = "cuckoo-victim-%s-%s"
 
     # VM states
     PENDING = "Pending"
@@ -43,9 +47,14 @@ class KubeVirt(Machinery):
     STOPPED = "Stopped"
 
     def __init__(self):
-        self.options = None
+        from cuckoo.misc import set_cwd
+        set_cwd("/home/cuckoo/.cuckoo")
         from cuckoo.core.database import Database
         self.db = Database()
+        self.db.connect()
+
+        from cuckoo.common.config import Config
+        self.set_options(Config("kv"))
         self.remote_control = False
 
     def _initialize(self, module_name):
@@ -56,12 +65,6 @@ class KubeVirt(Machinery):
         self.resource_type = None
         self.dynamic_machines_count = 0
         self.dynamic_machines_sequence = 0
-
-        # Kubernetes API Client
-        self._get_k8s_client()
-
-        # KubeVirt API Client
-        self._get_kv_client()
 
         super(KubeVirt, self)._initialize(module_name)
 
@@ -84,16 +87,55 @@ class KubeVirt(Machinery):
                 "KubeVirt and configure Cuckoo to use it?"
                 % self.options.kv.kubeconfig
             )
-        self.resource_type = "vm"
+        # self.resource_type = "vm"
         super(KubeVirt, self)._initialize_check()
 
         log.info("Deleting leftover persistent volume claims and virtual machines.")
         # TODO: do the deleting of PVCs and VMs
 
-        log.info("Reading the snapshot \"%s\" to be used to create victims." % self.options.kv.snapshot)
+        log.info("Reading the snapshot \"%s\" to be used to create victims." % self.options.kv.snapshots)
         # TODO: read the snapshot, get snapshot name, assign to class param and use it in create_machines
 
-        self._create_machines()
+        # If the lengths are different, that means there isn't a 1:1 mapping of supported OS tags
+        # and snapshots, when there should be.
+        if len(self.options.kv.supported_os_tags) != len(self.options.kv.snapshots):
+            raise CuckooConfigurationError(
+                "The lengths of self.options.kv.supported_os_tags (%s) and "
+                "self.options.kv.snapshots (%s) are not equal." % (
+                    self.options.kv.supported_os_tags, self.options.kv.snapshots)
+            )
+
+        valid_vm_names = [KubeVirt.VM_NAME_FORMAT % (self.options.kv.environment, tag)
+                          for tag in self.options.kv.supported_os_tags]
+
+        self.required_vms = {vm_name: {} for vm_name in valid_vm_names}
+
+        # Kubernetes API Client
+        self._get_k8s_client()
+
+        # KubeVirt API Client
+        self._get_kv_client()
+
+        self._set_vm_stage()
+
+#        self._create_machines()
+
+    def _set_vm_stage(self):
+        """
+        Ready. Set. Action! Set the stage for the VMs
+        """
+        # Check that each provided snapshot exists
+        # custom_client = client.CustomObjectsApi(self.k8s_api)
+        # snapshot = custom_client.get_namespaced_custom_object("snapshot.storage.k8s.io", "v1", self.options.kv.namespace, "volumesnapshots", "cuckoo-victim-win7x64-snapshot")
+
+        # self.k8s_api.create_namespaced_persistent_volume_claim()
+        for snapshot in self.options.kv.snapshots:
+            # self._create_pvc(snapshot)
+            self._create_machine(snapshot)
+
+
+        pass
+
 
     def start(self, label):
         """Start a virtual machine.
@@ -114,7 +156,7 @@ class KubeVirt(Machinery):
 
         try:
             # Start VM
-            self.api.start(label, NAMESPACE)
+            self.api.start(label, self.options.kv.namespace)
         except OSError as e:
             raise CuckooMachineError(
                 "KubeVirt failed starting the machine. "
@@ -218,13 +260,15 @@ class KubeVirt(Machinery):
                 "Unable to get status for %s" % label
             )
 
-    def _create_pvc(self):
+    def _create_pvc(self, snapshot):
+        tag = next(tag for tag in self.options.kv.supported_os_tags if tag in snapshot)
+        pvc_name = "cuckoo-victim-%s-pvc" % tag
         #TODO: Add a tag here to be used to represent if can be deleted
         # Create PVC representing the Harddrive for the victim vm
         reqs = client.V1ResourceRequirements(requests={"storage": "15Gi"})
-        spec = client.V1PersistentVolumeClaimSpec(resources=reqs, access_modes=["ReadWriteOnce"])
-        body = client.V1PersistentVolumeClaim(api_version="v1", metadata={"name": "cuckoo-victim-pvc-2", "namespace": NAMESPACE}, spec=spec)
-        self.k8s_api.create_namespaced_persistent_volume_claim(NAMESPACE, body)
+        spec = client.V1PersistentVolumeClaimSpec(resources=reqs, access_modes=["ReadWriteOnce"], data_source={"name": snapshot, "kind": "VolumeSnapshot", "apiGroup": "snapshot.storage.k8s.io"})
+        body = client.V1PersistentVolumeClaim(api_version="v1", metadata={"name": pvc_name, "namespace": self.options.kv.namespace}, spec=spec)
+        self.k8s_api.create_namespaced_persistent_volume_claim(namespace=self.options.kv.namespace, body=body)
 
     def _create_machines(self):
         available_machines = self.db.count_machines_available()
@@ -250,16 +294,37 @@ class KubeVirt(Machinery):
                 thr.start()
                 available_machines += 1
 
-    def _create_machine(self):
+    def _create_machine(self, snapshot):
         # TODO: use a tag here to mark if pvc/vm can be deleted
         # TODO: do something with snapshot in order to create pvc/vm
         # TODO: then get read vm to get all this info required below
 
-        vm_body = kubevirt.V1VirtualMachine()
+        tag = next(tag for tag in self.options.kv.supported_os_tags if tag in snapshot)
+
+        cpu = kubevirt.V1CPU(cores=2)
+        virtio_disk_target = kubevirt.V1DiskTarget(bus="virtio")
+        sata_cdrom_target = kubevirt.V1CDRomTarget(bus="sata")
+        harddrive_disk = kubevirt.V1Disk(name="harddrive", disk=virtio_disk_target)
+        virtiocontainerdisk = kubevirt.V1Disk(name="virtio", cdrom=sata_cdrom_target)
+        devices = kubevirt.V1Devices(disks=[harddrive_disk, virtiocontainerdisk])
+        machine = kubevirt.V1Machine(type="q35")
+        resource_reqs = kubevirt.V1ResourceRequirements(requests={"memory": "200M"})
+        domain_spec = kubevirt.V1DomainSpec(cpu=cpu, devices=devices, machine=machine, resources=resource_reqs)
+        pvc = client.V1PersistentVolumeClaimSource(claimName="cuckoo-victim-win7x64-pvc")
+        harddrive_volume = kubevirt.V1Volume(name="harddrive", persistentVolumeClaim=pvc)
+        container_disk_source = kubevirt.V1ContainerDiskSource(image="kubevirt/virtio-container-disk")
+        virtiocontainerdisk_volume = kubevirt.V1Volume(name="virtiocontainerdisk", containerDisk=container_disk_source)
+
+
+        vmi_spec = kubevirt.V1VirtualMachineInstanceSpec(domain=domain_spec, volumes=[harddrive_volume, virtiocontainerdisk_volume])
+
+        template = kubevirt.V1VirtualMachineInstanceTemplateSpec(spec=vmi_spec)
+        vm_spec = kubevirt.V1VirtualMachineSpec(template=template)
+        vm_body = kubevirt.V1VirtualMachine(kind="VirtualMachine", metadata={"name": "cuckoo-victim-win7x64-vm"}, spec=vm_spec)
         vm = {}
         try:
             log.debug("Creating virtual machine")
-            vm = self.kv_api.create_namespaced_virtual_machine(vm_body, NAMESPACE)
+            vm = self.kv_api.create_namespaced_virtual_machine(body=vm_body, namespace=self.options.kv.namespace)
         except kubevirt.rest.ApiException as e:
             log.error("Exception when calling DefaultApi->create_namespaced_virtual_machine: %s\n" % e)
 
@@ -349,8 +414,8 @@ def get_kv_client():
     return kubevirt.DefaultApi()
 
 def main():
-    kv_api = get_kv_client()
     kv = KubeVirt()
+    kv.initialize("kv")
     kv._create_machine()
 
     # k8s_api = get_k8s_client()
