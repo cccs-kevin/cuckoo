@@ -36,7 +36,7 @@ class Reboot(Auxiliary):
             entry = json.loads(line)
 
             # Screenshots etc.
-            if not entry["filepath"]:
+            if not entry["filepath"] or "files/" not in entry["path"]:
                 continue
 
             filepath = os.path.join(analysis_path, entry["path"])
