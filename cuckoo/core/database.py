@@ -1112,6 +1112,8 @@ class Database(object):
                         task.tags.append(self._get_or_create(
                             session, Tag, name=tag.strip()
                         ))
+                    elif isinstance(tag, Tag):
+                        task.tags.append(tag)
 
         if clock:
             if isinstance(clock, basestring):
@@ -1262,12 +1264,6 @@ class Database(object):
         @return: cursor or None.
         """
 
-        # Convert empty strings and None values to a valid int
-        if not timeout:
-            timeout = 0
-        if not priority:
-            priority = 1
-
         task = self.view_task(task_id)
         if not task or not os.path.exists(task.target):
             log.error(
@@ -1279,6 +1275,28 @@ class Database(object):
         # TODO Integrate the Reboot screen with the submission portal and
         # pass the parent task ID through as part of the "options".
         custom = "%s" % task_id
+
+        # Inherit parent task details if not passed in
+        if not timeout:
+            timeout = task.timeout
+        if not options:
+            options = task.options
+        if not priority:
+            priority = task.priority
+        if not owner:
+            owner = task.owner
+        if not machine:
+            machine = task.machine
+        if not platform:
+            platform = task.platform
+        if not tags:
+            tags = task.tags
+        if not memory:
+            memory = task.memory
+        if not enforce_timeout:
+            enforce_timeout = task.enforce_timeout
+        if not clock:
+            clock = task.clock
 
         return self.add(File(task.target), timeout, "reboot", options,
                         priority, custom, owner, machine, platform, tags,

@@ -36,7 +36,7 @@ class Reboot(Auxiliary):
             entry = json.loads(line)
 
             # Screenshots etc.
-            if not entry["filepath"]:
+            if not entry["filepath"] or "files/" not in entry["path"]:
                 continue
 
             filepath = os.path.join(analysis_path, entry["path"])
@@ -47,7 +47,11 @@ class Reboot(Auxiliary):
             files = {
                 "file": open(filepath, "rb"),
             }
-            self.guest_manager.post("/store", files=files, data=data)
+            try:
+                self.guest_manager.post("/store", files=files, data=data)
+            except Exception:
+                log.warning("Failed to post: %s" % filepath)
+                pass
 
     def cb_prepare_guest(self):
         log.info("Preparing task #%d for a reboot analysis..", self.task.id)

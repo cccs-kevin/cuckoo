@@ -33,7 +33,13 @@ class Reboot(Auxiliary):
 
     def _handle_regkey_written(self, event):
         regkey, type_, value = event["args"]
-        set_regkey_full(regkey, type_, value)
+        try:
+            if isinstance(value, str) and "\x00" in value:
+                value = value.replace("\x00", "")
+            set_regkey_full(regkey, type_, value)
+        except Exception as e:
+            log.debug(str(e))
+            pass
 
     def _handle_create_process(self, event):
         self.analyzer.reboot.append((event["category"], event["args"]))
