@@ -240,6 +240,17 @@ class WindowsMonitor(BehaviorHandler):
 
                 self.behavior[process["pid"]] = BehaviorReconstructor()
                 self.reboot[process["pid"]] = RebootReconstructor()
+                if process["process_name"] == "lsass.exe":
+                    # We will not yield!
+                    continue
+                ts = process["first_seen"] + \
+                     datetime.timedelta(0, 0, event["time"] * 1000)
+                yield {
+                    "type": "reboot",
+                    "category": "create_process",
+                    "args": (process["process_path"], process["command_line"], "explorer.exe"),
+                    "time": int(ts.strftime("%d")),
+                }
 
             # Create generic events out of the windows calls.
             elif event["type"] == "apicall":
